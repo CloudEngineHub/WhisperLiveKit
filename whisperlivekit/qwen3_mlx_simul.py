@@ -69,7 +69,7 @@ class Qwen3MLXSimulConfig:
     alignment_heads_path: Optional[str] = None
     border_fraction: float = 0.15
     rewind_fraction: float = 0.12
-    audio_min_len: float = 0.5
+    audio_min_len: float = 3.0
     audio_max_len: float = 15.0
     max_context_tokens: int = 30
     max_alignment_heads: int = 20
@@ -94,6 +94,14 @@ class _SessionState:
     committed_token_ids: List[int] = field(default_factory=list)
     detected_language: Optional[str] = None
     last_infer_samples: int = 0
+    # Pending partial word from previous _infer() call.
+    # When a border stops mid-word (e.g., "Vill" from "Villard"),
+    # the partial is held here and prepended to the next call's output.
+    pending_partial: str = ""
+    pending_partial_start: Optional[float] = None
+    # Whether the first emitted token of this call is a continuation of the
+    # previous call's last word (no leading space → subword continuation).
+    first_emit_is_continuation: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -399,13 +407,15 @@ class Qwen3MLXSimulStreamingOnlineProcessor:
         if not is_last and new_samples < int(1.0 * self.SAMPLING_RATE):
             return [], self.end
 
-        self.state.last_infer_samples = len(self.state.audio_buffer)
-
         try:
             words = self._infer(is_last)
         except Exception as e:
             logger.exception("Qwen3 MLX SimulStreaming inference error: %s", e)
             return [], self.end
+
+        # Update the budget marker after _infer() so the decoder can size its
+        # generation budget using the real amount of fresh audio.
+        self.state.last_infer_samples = len(self.state.audio_buffer)
 
         if not words:
             return [], self.end
@@ -609,6 +619,9 @@ class Qwen3MLXSimulStreamingOnlineProcessor:
             return []
 
         emitted_ids = generated[:emit_up_to]
+
+        if emit_up_to <= 0:
+            return []
 
         # 11. Build timestamped words
         words = self._build_timestamped_words(
