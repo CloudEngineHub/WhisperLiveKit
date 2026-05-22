@@ -147,8 +147,8 @@ def parse_args():
         "--backend",
         type=str,
         default="auto",
-        choices=["auto", "mlx-whisper", "faster-whisper", "whisper", "openai-api", "voxtral", "voxtral-mlx", "qwen3", "qwen3-mlx", "qwen3-mlx-simul", "qwen3-simul", "vllm-realtime"],
-        help="Select the ASR backend implementation. Use 'qwen3-mlx-simul' for Qwen3-ASR SimulStreaming on Apple Silicon (MLX). Use 'qwen3-mlx' for Qwen3-ASR LocalAgreement on MLX. Use 'qwen3-simul' for Qwen3-ASR SimulStreaming (PyTorch). Use 'vllm-realtime' for vLLM Realtime WebSocket.",
+        choices=["auto", "mlx-whisper", "faster-whisper", "whisper", "openai-api", "voxtral", "voxtral-mlx", "qwen3-vllm", "qwen3-vllm-metal"],
+        help="Select the ASR backend implementation. Use 'qwen3-vllm' for Qwen3-ASR through in-process vLLM with ForcedAligner on GPU. Use 'qwen3-vllm-metal' for Qwen3-ASR through vllm-metal in-process STT on Apple Silicon.",
     )
     parser.add_argument(
         "--no-vac",
@@ -196,20 +196,55 @@ def parse_args():
         default=False,
         help="If set, raw PCM (s16le) data is expected as input and FFmpeg will be bypassed. Frontend will use AudioWorklet instead of MediaRecorder."
     )
-    # vLLM Realtime backend arguments
-    parser.add_argument(
-        "--vllm-url",
-        type=str,
-        default="ws://localhost:8000/v1/realtime",
-        dest="vllm_url",
-        help="URL of the vLLM realtime WebSocket endpoint.",
-    )
+    # vLLM Qwen3 backend arguments
     parser.add_argument(
         "--vllm-model",
         type=str,
         default="",
         dest="vllm_model",
         help="Model name to use with vLLM (e.g. Qwen/Qwen3-ASR-1.7B).",
+    )
+    parser.add_argument(
+        "--vllm-aligner-model",
+        type=str,
+        default="Qwen/Qwen3-ForcedAligner-0.6B",
+        dest="vllm_aligner_model",
+        help="ForcedAligner model name to use with the qwen3-vllm backend.",
+    )
+    parser.add_argument(
+        "--vllm-tensor-parallel-size",
+        type=int,
+        default=1,
+        dest="vllm_tensor_parallel_size",
+        help="Tensor parallel size for the qwen3-vllm in-process backend.",
+    )
+    parser.add_argument(
+        "--vllm-gpu-memory-utilization",
+        type=float,
+        default=0.45,
+        dest="vllm_gpu_memory_utilization",
+        help="GPU memory utilization fraction for qwen3-vllm vLLM engines.",
+    )
+    parser.add_argument(
+        "--vllm-dtype",
+        type=str,
+        default="auto",
+        dest="vllm_dtype",
+        help="dtype passed to vLLM for qwen3-vllm engines, e.g. auto, bfloat16, float16.",
+    )
+    parser.add_argument(
+        "--holdback-words",
+        type=int,
+        default=None,
+        dest="holdback_words",
+        help="For Qwen3 vllm-metal, keep this many trailing words uncommitted.",
+    )
+    parser.add_argument(
+        "--no-trim-sentence-buffer",
+        action="store_false",
+        default=True,
+        dest="trim_sentence_buffer",
+        help="Disable Qwen3 vllm-metal buffer trimming at committed sentence boundaries.",
     )
 
     # SimulStreaming-specific arguments
@@ -316,7 +351,23 @@ def parse_args():
         type=str,
         default=None,
         dest="model_path",
-        help="Direct path to the SimulStreaming Whisper .pt model file. Overrides --model for SimulStreaming backend.",
+        help="Legacy alias for --decoder-model-path. Direct path to the SimulStreaming PyTorch Whisper decoder/alignment model.",
+    )
+
+    simulstreaming_group.add_argument(
+        "--encoder-model-path",
+        type=str,
+        default=None,
+        dest="encoder_model_path",
+        help="Direct path or Hugging Face repo ID for the fast encoder weights used by SimulStreaming hybrid mode (CT2 for faster-whisper, MLX for mlx-whisper).",
+    )
+
+    simulstreaming_group.add_argument(
+        "--decoder-model-path",
+        type=str,
+        default=None,
+        dest="decoder_model_path",
+        help="Direct path or Hugging Face repo ID for the PyTorch Whisper decoder/alignment weights used by SimulStreaming.",
     )
 
     simulstreaming_group.add_argument(
