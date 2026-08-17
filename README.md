@@ -73,7 +73,7 @@ wlk bench
 
 #### API Compatibility
 
-WhisperLiveKit exposes multiple APIs so you can use it as a drop-in replacement:
+WhisperLiveKit exposes compatibility-oriented subsets of popular APIs:
 
 ```bash
 # OpenAI-compatible REST API
@@ -82,8 +82,8 @@ curl http://localhost:8000/v1/audio/transcriptions -F file=@audio.wav
 # Works with the OpenAI Python SDK
 client = OpenAI(base_url="http://localhost:8000/v1", api_key="unused")
 
-# Deepgram-compatible WebSocket (use any Deepgram SDK)
-# Just point your Deepgram client at localhost:8000
+# Deepgram-compatible WebSocket
+# See docs/API.md for supported options and current SDK setup
 
 # Native WebSocket for real-time streaming
 ws://localhost:8000/asr
@@ -123,8 +123,11 @@ For a native SwiftUI macOS client, see [macos/WhisperLiveKitMac](macos/WhisperLi
 | **Qwen3-ASR vLLM (CUDA)** | `uv sync --extra qwen3-vllm` | `pip install -e ".[qwen3-vllm]"` |
 | **Qwen3-ASR streaming (HF, CUDA/MPS/CPU)** | `uv sync --extra qwen3-streaming` | `pip install -e ".[qwen3-streaming]"` |
 | **Qwen3-ASR vLLM Metal (Apple Silicon)** | Install vLLM with the official vllm-metal script first, then `uv sync --extra qwen3-vllm-metal` | Install vLLM with the official vllm-metal script first, then `pip install -e ".[qwen3-vllm-metal]"` |
-| **Speaker diarization (Sortformer / NeMo)** | `uv sync --extra diarization-sortformer` | `pip install -e ".[diarization-sortformer]"` |
-| *[Not recommended]* Speaker diarization with Diart | `uv sync --extra diarization-diart` | `pip install -e ".[diarization-diart]"` |
+| **Speaker diarization (Sortformer / NeMo 3)** | `uv sync --extra diarization-sortformer` | `pip install -e ".[diarization-sortformer]"` |
+| *[Not recommended]* Speaker diarization with Diart (Python 3.11 or 3.12) | `uv sync --extra diarization-diart` | `pip install -e ".[diarization-diart]"` |
+| **Canary-1b-v2 (NeMo, CUDA/CPU)** | `uv sync --extra canary` | `pip install -e ".[canary]"` |
+
+The Diart profile is limited to Python 3.11 and 3.12 because Diart 0.9.2 requires NumPy below 2. Use Sortformer for diarization on Python 3.13.
 
 Supported GPU profiles:
 
@@ -139,7 +142,7 @@ uv sync --extra cu129 --extra voxtral-hf --extra translation
 uv sync --extra qwen3-vllm
 ```
 
-`qwen3-vllm` uses vLLM's CUDA wheel stack and must be installed in a separate environment from `cu129`. `voxtral-hf` / `qwen3-vllm-metal` and `diarization-sortformer` are also intentionally incompatible extras and must be installed in separate environments.
+`qwen3-vllm` uses vLLM's CUDA wheel stack and must be installed in a separate environment from `cu129`. Several heavy extras (`voxtral-hf`, `qwen3-vllm-metal`, and the vLLM stacks) intentionally conflict with one another and must be installed in separate environments; the authoritative list is `[tool.uv].conflicts` in `pyproject.toml`. The `canary` extra conflicts with `voxtral-hf` and `qwen3-vllm-metal`, but is compatible with `diarization-sortformer` (both pull `nemo-toolkit[asr]`).
 
 See **Parameters & Configuration** below on how to use them.
 
@@ -290,6 +293,35 @@ text-decoder request per chunk. The `append-kv` and `rolling` names remain as
 compatibility aliases for the HF decoder path. Keep standard `qwen3-vllm` for
 best current accuracy until the causal quality gate is fixed.
 
+### Canary Backend
+
+WhisperLiveKit supports [NVIDIA Canary-1b-v2](https://huggingface.co/nvidia/canary-1b-v2)
+via [NeMo](https://github.com/NVIDIA/NeMo), a 1B-parameter model covering 25 European
+languages with native word-level timestamps. Automatic language detection uses NeMo's
+AmberNet language-ID model when `--language auto` is set; the detected language is locked
+in once enough audio has accumulated. Canary streams through the LocalAgreement policy.
+
+```bash
+pip install -e ".[canary]"
+wlk --backend canary --language auto
+```
+
+Notes:
+- Runs on CUDA and CPU. A GPU is strongly recommended: CPU works (see
+  `scripts/smoke_canary.py`) but is slow for a 1B-parameter model. On Apple
+  Silicon, NeMo's current restore path uses CPU; this backend does not enable
+  MPS device placement. NeMo is a heavy dependency (torch, Lightning, and
+  friends).
+- Supports WhisperLiveKit's Python range, 3.11 through 3.13. The `canary` extra
+  intentionally selects `nemo-toolkit[asr]>=3.0,<4`, the NeMo line validated
+  with Canary timestamps and Python 3.13.
+- Explicit `--language <code>` skips language detection entirely. Tune detection
+  with `--canary-lid-min-sec` (minimum audio before detecting) and
+  `--canary-lid-min-conf` (confidence threshold to lock in the detected language).
+- Canary-1b-v2 is distributed under CC-BY-4.0. The separate
+  [AmberNet language-ID model](https://catalog.ngc.nvidia.com/orgs/nvidia/teams/nemo/models/langid_ambernet)
+  is downloaded from NVIDIA NGC; review its model-card terms for your deployment.
+
 ### Usage Examples
 
 **Command-line Interface**: Start the transcription server with various options:
@@ -361,7 +393,9 @@ async def websocket_endpoint(websocket: WebSocket):
 | `--translation-backend` | `nllb` (in-process, CPU-friendly) or `alignatt`: streaming LLM translation through an [Alignatt4LLM](https://github.com/QuentinFuxa/Alignatt4LLM) sidecar, with attention-gated append-only commits. See [docs/translation-alignatt.md](docs/translation-alignatt.md). | `nllb` |
 | `--diarization` | Enable speaker identification | `False` |
 | `--backend-policy` | Streaming strategy: `1`/`simulstreaming` uses AlignAtt SimulStreaming, `2`/`localagreement` uses the LocalAgreement policy | `simulstreaming` |
-| `--backend` | ASR backend selector. `auto` picks MLX on macOS (if installed), otherwise Faster-Whisper, otherwise vanilla Whisper. Options: `mlx-whisper`, `faster-whisper`, `whisper`, `openai-api` (LocalAgreement only), `funasr` (SenseVoiceSmall, LocalAgreement only), `voxtral-mlx` (Apple Silicon), `voxtral` (HuggingFace), `qwen3-vllm`, `qwen3-vllm-metal` (Apple Silicon), `qwen3-streaming` (HuggingFace, CUDA/MPS/CPU) | `auto` |
+| `--backend` | ASR backend selector. `auto` picks MLX on macOS (if installed), otherwise Faster-Whisper, otherwise vanilla Whisper. Options: `mlx-whisper`, `faster-whisper`, `whisper`, `openai-api` (LocalAgreement only), `funasr` (SenseVoiceSmall, LocalAgreement only), `voxtral-mlx` (Apple Silicon), `voxtral` (HuggingFace), `qwen3-vllm`, `qwen3-vllm-metal` (Apple Silicon), `qwen3-streaming` (HuggingFace, CUDA/MPS/CPU), `canary` (NeMo, CUDA/CPU, LocalAgreement only) | `auto` |
+| `--pause-segmentation-seconds` | Create a stable transcript boundary when a VAD pause is longer than this many seconds. Use `0` to disable pause-based segmentation. | `5.0` |
+| `--asr-coalesce-min-s` | Defer an ASR call until this much new audio has accrued. Trades update cadence for fewer encoder passes; use `0` to disable. | `0` |
 | `--no-vac` | Disable Voice Activity Controller. NOT ADVISED | `False` |
 | `--no-vad` | Disable Voice Activity Detection. NOT ADVISED | `False` |
 | `--warmup-file` | Audio file path for model warmup | `jfk.wav` |
@@ -383,9 +417,27 @@ async def websocket_endpoint(websocket: WebSocket):
 |-----------|-------------|---------|
 | `--diarization-backend` |  `diart` or `sortformer` | `sortformer` |
 | `--sortformer-model-path` | Path to a local Sortformer `.nemo` file, a directory containing exactly one `.nemo` file, or a NeMo/Hugging Face model ID. | `None` |
+| `--sortformer-max-speakers` | Declare a known upper bound from 1 to 4 for a Sortformer session. The first N speaker channels are retained in arrival order. | all checkpoint channels (4 for the default model) |
 | `--disable-punctuation-split` | [NOT FUNCTIONAL IN 0.2.15 / 0.2.16] Disable punctuation based splits. See #214 | `False` |
 | `--segmentation-model` | Hugging Face model ID for Diart segmentation model. [Available models](https://github.com/juanmc2005/diart/tree/main?tab=readme-ov-file#pre-trained-models) | `pyannote/segmentation-3.0` |
 | `--embedding-model` | Hugging Face model ID for Diart embedding model. [Available models](https://github.com/juanmc2005/diart/tree/main?tab=readme-ov-file#pre-trained-models) | `pyannote/embedding` |
+
+`--sortformer-max-speakers` is an assertion about the audio, not speaker-count
+estimation. Use it only when the session is known to contain at most N speakers.
+If more speakers are present, later arrival-ordered channels are excluded and
+those speakers can be attributed to a retained label. The default preserves the
+full checkpoint output. Sortformer produces independent activity probabilities,
+including overlapping activity, but WhisperLiveKit currently resolves each
+diarization frame and ASR token to one speaker. This option does not add
+simultaneous-speaker output.
+
+| Canary backend options (only used with `--backend canary`) | Description | Default |
+|-----------|-------------|---------|
+| `--canary-model` | HuggingFace/NGC model id or local `.nemo` path | `nvidia/canary-1b-v2` |
+| `--canary-default-lang` | Fallback language used until auto-detection locks in. An explicit `--language` bypasses it. | `en` |
+| `--canary-lid-model` | NeMo language-ID model used for `--language auto` | `langid_ambernet` |
+| `--canary-lid-min-sec` | Non-negative minimum seconds of audio before attempting language detection | `2.0` |
+| `--canary-lid-min-conf` | Confidence threshold in `[0, 1]` to lock in the detected language | `0.5` |
 
 | SimulStreaming backend options | Description | Default |
 |-----------|-------------|---------|

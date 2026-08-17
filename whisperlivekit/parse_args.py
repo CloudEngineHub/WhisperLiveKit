@@ -71,6 +71,22 @@ def parse_args():
     )
 
     parser.add_argument(
+        "--sortformer-max-speakers",
+        type=int,
+        choices=range(1, 5),
+        default=None,
+        dest="sortformer_max_speakers",
+        help=(
+            "Declare that a Sortformer session contains at most this many "
+            "speakers (1-4). The first N arrival-ordered speaker channels are "
+            "kept. This does not estimate the speaker count or reject extra "
+            "speakers; if more are present, attribution to retained labels is "
+            "undefined. Default: use every checkpoint channel (4 for the "
+            "default model)."
+        ),
+    )
+
+    parser.add_argument(
         "--punctuation-split",
         action="store_true",
         default=False,
@@ -116,6 +132,27 @@ def parse_args():
         type=float,
         default=0.1,
         help="Minimum audio chunk size in seconds. It waits up to this time to do processing. If the processing takes shorter time, it waits, otherwise it processes the whole segment that was received by this time.",
+    )
+
+    parser.add_argument(
+        "--pause-segmentation-seconds",
+        type=float,
+        default=5.0,
+        dest="pause_segmentation_seconds",
+        help=(
+            "Create a stable transcript boundary after a VAD pause longer than "
+            "this many seconds. Use 0 to disable pause-based segmentation."
+        ),
+    )
+
+    parser.add_argument(
+        "--asr-coalesce-min-s",
+        type=float,
+        default=0.0,
+        dest="asr_coalesce_min_s",
+        help="Defer ASR until this much new audio has accrued, trading update "
+             "cadence for fewer encoder passes. Held-back audio is bounded by "
+             "this value plus one chunk. Non-finite or <= 0 disables (default).",
     )
 
     parser.add_argument(
@@ -206,8 +243,8 @@ def parse_args():
         "--backend",
         type=str,
         default="auto",
-        choices=["auto", "mlx-whisper", "faster-whisper", "whisper", "openai-api", "funasr", "voxtral", "voxtral-mlx", "qwen3-vllm", "qwen3-vllm-metal", "qwen3-streaming"],
-        help="Select the ASR backend implementation. Use 'funasr' for SenseVoiceSmall through LocalAgreement (zh/yue/en/ja/ko or auto). Use 'qwen3-vllm' for Qwen3-ASR through in-process vLLM with ForcedAligner on GPU. Use 'qwen3-vllm-metal' for Qwen3-ASR through vllm-metal in-process STT on Apple Silicon. Use 'qwen3-streaming' for Qwen3-ASR through plain HF Transformers with a bounded-recompute audio cache (CUDA/MPS/CPU, no vLLM; requires an explicit --language).",
+        choices=["auto", "mlx-whisper", "faster-whisper", "whisper", "openai-api", "funasr", "voxtral", "voxtral-mlx", "qwen3-vllm", "qwen3-vllm-metal", "qwen3-streaming", "canary"],
+        help="Select the ASR backend implementation. Use 'funasr' for SenseVoiceSmall through LocalAgreement (zh/yue/en/ja/ko or auto). Use 'qwen3-vllm' for Qwen3-ASR through in-process vLLM with ForcedAligner on GPU. Use 'qwen3-vllm-metal' for Qwen3-ASR through vllm-metal in-process STT on Apple Silicon. Use 'qwen3-streaming' for Qwen3-ASR through plain HF Transformers with a bounded-recompute audio cache (CUDA/MPS/CPU, no vLLM; requires an explicit --language). Use 'canary' for NVIDIA Canary through NeMo on CUDA or CPU with LocalAgreement.",
     )
     parser.add_argument(
         "--no-vac",
@@ -780,6 +817,46 @@ def parse_args():
         type=str,
         default="600M",
         help="600M or 1.3B",
+    )
+
+    # Canary backend arguments
+    canary_group = parser.add_argument_group(
+        "Canary backend arguments (only used with --backend canary)"
+    )
+    canary_group.add_argument(
+        "--canary-model",
+        type=str,
+        default="nvidia/canary-1b-v2",
+        dest="canary_model",
+        help="Canary model: HuggingFace/NGC id or local .nemo path. Default nvidia/canary-1b-v2.",
+    )
+    canary_group.add_argument(
+        "--canary-default-lang",
+        type=str,
+        default="en",
+        dest="canary_default_lang",
+        help="Fallback source language used while auto-detecting (and if detection stays low-confidence).",
+    )
+    canary_group.add_argument(
+        "--canary-lid-model",
+        type=str,
+        default="langid_ambernet",
+        dest="canary_lid_model",
+        help="NeMo spoken-language-ID model used for auto detection (EncDecSpeakerLabelModel).",
+    )
+    canary_group.add_argument(
+        "--canary-lid-min-sec",
+        type=float,
+        default=2.0,
+        dest="canary_lid_min_sec",
+        help="Minimum seconds of buffered audio before language detection runs.",
+    )
+    canary_group.add_argument(
+        "--canary-lid-min-conf",
+        type=float,
+        default=0.5,
+        dest="canary_lid_min_conf",
+        help="Minimum LID confidence (0-1) required to lock the detected language.",
     )
 
     translation_group = parser.add_argument_group("Translation backend")

@@ -1,11 +1,27 @@
 """Typed configuration for the WhisperLiveKit pipeline."""
 import logging
+import math
 from dataclasses import dataclass, fields
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 FUNASR_LANGUAGES = frozenset({"auto", "zh", "yue", "en", "ja", "ko"})
+
+
+def validate_pause_segmentation_seconds(value: float) -> float:
+    """Return a normalized pause threshold or raise for invalid input."""
+    try:
+        normalized = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "pause_segmentation_seconds must be finite and non-negative."
+        ) from exc
+    if not math.isfinite(normalized) or normalized < 0:
+        raise ValueError(
+            "pause_segmentation_seconds must be finite and non-negative."
+        )
+    return normalized
 
 
 def parse_cors_origins(origins: Optional[str]) -> list[str]:
@@ -61,6 +77,8 @@ class WhisperLiveKitConfig:
     # Transcription common
     warmup_file: Optional[str] = None
     min_chunk_size: float = 0.1
+    # Defer ASR until this much new audio has accrued; non-finite or <= 0 disables.
+    asr_coalesce_min_s: float = 0.0
     # None = auto: unlimited history in mode=full, 300 s in diff mode.
     retention_seconds: Optional[float] = None
     # REST /v1/audio/transcriptions budget; 0 = auto (max(120, 2.5x audio)).
@@ -150,7 +168,37 @@ class WhisperLiveKitConfig:
     qwen3_streaming_tower_checkpoint: str = ""
     qwen3_streaming_block_frames: int = 192
 
+    # Canary backend (NeMo EncDecMultiTaskModel on LocalAgreement)
+    canary_model: str = "nvidia/canary-1b-v2"
+    canary_default_lang: str = "en"
+    canary_lid_model: str = "langid_ambernet"
+    canary_lid_min_sec: float = 2.0
+    canary_lid_min_conf: float = 0.5
+
+    # Keep new fields at the end to preserve positional dataclass construction.
+    # Pauses longer than this become stable transcript boundaries; 0 disables.
+    pause_segmentation_seconds: float = 5.0
+    # None exposes every speaker channel provided by the Sortformer checkpoint.
+    sortformer_max_speakers: Optional[int] = None
+
     def __post_init__(self):
+        self.pause_segmentation_seconds = validate_pause_segmentation_seconds(
+            self.pause_segmentation_seconds
+        )
+        if self.sortformer_max_speakers is not None:
+            if (
+                isinstance(self.sortformer_max_speakers, bool)
+                or not isinstance(self.sortformer_max_speakers, int)
+                or not 1 <= self.sortformer_max_speakers <= 4
+            ):
+                raise ValueError(
+                    "sortformer_max_speakers must be an integer between 1 and 4."
+                )
+            if self.diarization_backend != "sortformer":
+                raise ValueError(
+                    "sortformer_max_speakers requires diarization_backend=sortformer."
+                )
+
         # .en model suffix forces English for Whisper-family backends.
         if (
             self.backend != "funasr"
@@ -163,6 +211,19 @@ class WhisperLiveKitConfig:
             self.backend_policy = "simulstreaming"
         elif self.backend_policy == "2":
             self.backend_policy = "localagreement"
+
+        if self.backend == "canary":
+            if not math.isfinite(self.canary_lid_min_sec) or self.canary_lid_min_sec < 0:
+                raise ValueError(
+                    "canary_lid_min_sec must be finite and non-negative."
+                )
+            if (
+                not math.isfinite(self.canary_lid_min_conf)
+                or not 0.0 <= self.canary_lid_min_conf <= 1.0
+            ):
+                raise ValueError(
+                    "canary_lid_min_conf must be between 0 and 1."
+                )
 
         if self.backend != "funasr":
             return
