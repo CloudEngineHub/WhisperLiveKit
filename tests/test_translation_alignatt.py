@@ -156,9 +156,9 @@ def test_punctuation_triggers_final_segment_with_span(sidecar):
     assert buffer2.text == "AGAIN"
 
 
-def test_tail_words_are_sent_untimestamped_and_buffered(sidecar):
-    client = make_client(sidecar)  # balanced: tail on
-    assert client.wants_hypothesis_tail
+@pytest.mark.parametrize("latency", ["balanced", "quality"])
+def test_latency_preset_controls_the_uncommitted_tail_sent_to_the_sidecar(sidecar, latency):
+    client = make_client(sidecar, latency=latency)
     client.insert_tokens([
         token("Hello", 0.0, 0.4),
         HypothesisTail(start=0.5, end=1.8, text="how are"),
@@ -166,15 +166,14 @@ def test_tail_words_are_sent_untimestamped_and_buffered(sidecar):
     validated, buffer = client.process()
     assert validated is None
     update = sidecar.updates[-1]
-    assert [w[0] for w in update["tail"]["words"]] == ["how", "are"]
-    assert all(w[1] is None and w[2] is None for w in update["tail"]["words"])
+    if latency == "balanced":
+        assert [w[0] for w in update["tail"]["words"]] == ["how", "are"]
+        assert all(w[1] is None and w[2] is None for w in update["tail"]["words"])
+    else:
+        assert "tail" not in update
+    assert [w[0] for w in update["words"]] == ["Hello"]
     assert update["clock_ms"] == pytest.approx(1800.0)
     assert buffer.text == "HELLO"  # accepted only; the draft stays server-side
-
-
-def test_quality_latency_preset_disables_tail(sidecar):
-    client = make_client(sidecar, latency="quality")
-    assert client.wants_hypothesis_tail is False
 
 
 def test_pacing_skips_tail_only_updates_but_not_commits(sidecar):
@@ -354,5 +353,7 @@ def test_translation_processor_plumbing_with_fake_sidecar(sidecar):
     assert processor.state.new_translation, "no validated translation produced"
     assert " ".join(t.text for t in processor.state.new_translation) == "HELLO WORLD. [F] LAST WORDS [F]"
     assert processor.translation._pending_finals == []
-    processor.translation.close()
+    from whisperlivekit.translation_processor import close_translation
+
+    asyncio.run(close_translation(processor.translation))
     assert processor.translation._ws is None

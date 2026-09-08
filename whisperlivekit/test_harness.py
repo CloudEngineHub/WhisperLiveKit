@@ -4,10 +4,6 @@ Wraps AudioProcessor to provide a controllable, observable interface
 for testing transcription, diarization, silence detection, and timing
 without needing a running server or WebSocket connection.
 
-Designed for use by AI agents: feed audio with timeline control,
-inspect state at any point, pause/resume to test silence detection,
-cut to test abrupt termination.
-
 Usage::
 
     import asyncio
@@ -44,6 +40,7 @@ Usage::
 
 import asyncio
 import logging
+import math
 import subprocess
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
@@ -77,16 +74,19 @@ def _load_audio_pcm_soundfile(audio_path: str, sample_rate: int) -> Optional[byt
     downmixing; those stay ffmpeg's job.
     """
     try:
+        import numpy as np
         import soundfile as sf
     except ImportError:
         return None
     try:
-        data, sr = sf.read(str(audio_path), dtype="int16", always_2d=True)
+        data, sr = sf.read(str(audio_path), dtype="float32", always_2d=True)
     except Exception:
         return None
     if sr != sample_rate or data.shape[1] != 1:
         return None
-    return data[:, 0].tobytes()
+    # libsndfile does not scale floating-point WAV data when reading int16;
+    # normalized recordings would otherwise become almost entirely silence.
+    return np.clip(np.rint(data[:, 0] * 32768), -32768, 32767).astype("<i2").tobytes()
 
 
 def load_audio_pcm(audio_path: str, sample_rate: int = SAMPLE_RATE) -> bytes:
@@ -139,6 +139,7 @@ class TestState:
     audio_position: float = 0.0
     status: str = ""
     error: str = ""
+    translation_error: str = ""
 
     @classmethod
     def from_front_data(cls, front_data: FrontData, audio_position: float = 0.0) -> "TestState":
@@ -155,6 +156,7 @@ class TestState:
             audio_position=audio_position,
             status=d.get("status", ""),
             error=d.get("error", ""),
+            translation_error=d.get("translation_error", ""),
         )
 
     # ── Text accessors ──
@@ -617,16 +619,28 @@ class TestHarness:
             speed: Playback speed multiplier.
             chunk_duration: Duration of each chunk sent (seconds).
         """
-        chunk_bytes = int(chunk_duration * SAMPLE_RATE * BYTES_PER_SAMPLE)
+        if not math.isfinite(speed) or speed < 0:
+            raise ValueError("Feed speed must be finite and non-negative")
+        if not math.isfinite(chunk_duration) or chunk_duration * SAMPLE_RATE < 1:
+            raise ValueError("Chunk duration must be finite and at least one audio sample")
+        chunk_bytes = int(chunk_duration * SAMPLE_RATE) * BYTES_PER_SAMPLE
+        loop = asyncio.get_running_loop()
+        started = loop.time()
         offset = 0
         while offset < len(pcm_data):
             end = min(offset + chunk_bytes, len(pcm_data))
+            if speed > 0:
+                # A captured packet is available only after its final sample.
+                # Absolute deadlines avoid accumulating write/scheduler delays,
+                # and leave no artificial drain interval after the last packet.
+                due = started + end / (SAMPLE_RATE * BYTES_PER_SAMPLE) / speed
+                delay = due - loop.time()
+                if delay > 0:
+                    await asyncio.sleep(delay)
             await self._processor.process_audio(pcm_data[offset:end])
             chunk_seconds = (end - offset) / (SAMPLE_RATE * BYTES_PER_SAMPLE)
             self._audio_position += chunk_seconds
             offset = end
-            if speed > 0:
-                await asyncio.sleep(chunk_duration / speed)
 
     # ── Pause / silence ──
 
@@ -712,6 +726,8 @@ class TestHarness:
             await self._processor.process_audio(b"")
             if self._collect_task:
                 await self._collect_task
+        if self._state.translation_error:
+            raise RuntimeError(self._state.translation_error)
         return self._state
 
     async def cut(self, timeout: float = 5.0) -> TestState:

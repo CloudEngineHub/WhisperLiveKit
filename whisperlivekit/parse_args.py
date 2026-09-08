@@ -169,6 +169,15 @@ def build_parser():
     )
 
     parser.add_argument(
+        "--max-buffered-audio", type=float, default=30.0,
+        help="Maximum pending audio in seconds per processing queue (default: 30).",
+    )
+    parser.add_argument(
+        "--backpressure-timeout", type=float, default=30.0,
+        help="Fail the session if a full processing queue cannot accept work within this many seconds (default: 30).",
+    )
+
+    parser.add_argument(
         "--rest-timeout",
         type=float,
         default=0.0,
@@ -864,11 +873,36 @@ def build_parser():
         "--translation-backend",
         type=str,
         default="nllb",
-        choices=["nllb", "alignatt"],
+        choices=["nllb", "alignatt", "mlx-llm-mt", "hunyuan-mlx"],
         help="Translation engine for --target-language: 'nllb' (in-process, "
         "CPU-friendly) or 'alignatt' (Alignatt4LLM sidecar over WebSocket, "
         "streaming LLM translation with attention-gated commits; requires a "
-        "running alignatt-mt-server).",
+        "running alignatt-mt-server) or 'mlx-llm-mt' (in-process MLX "
+        "translation via mlx-lm; Hunyuan-MT is the first config) or "
+        "'hunyuan-mlx' (alias for mlx-llm-mt).",
+    )
+    translation_group.add_argument(
+        "--mlx-llm-mt-model",
+        type=str,
+        default="hy-mt2-1.8b-8bit",
+        help="Model id for --translation-backend mlx-llm-mt "
+        "(default: hy-mt2-1.8b-8bit; also: hy-mt2-1.8b-4bit, hy-mt2-7b-4bit, "
+        "hunyuan-mt-7b-4bit, translategemma-4b-it-4bit).",
+        dest="mlx_llm_mt_model",
+    )
+    translation_group.add_argument(
+        "--simultaneous",
+        action="store_true",
+        default=False,
+        help="Enable the simultaneous-MT variant of --translation-backend "
+        "mlx-llm-mt: drafts translation over the unstable ASR tail and "
+        "commits target tokens via the AlignAtt attention policy. Requires "
+        "a bundled or explicit calibration matching the model and direction.",
+        dest="mlx_llm_mt_simultaneous",
+    )
+    translation_group.add_argument(
+        "--mlx-llm-mt-calibration",
+        help="An AlignAtt4LLM head JSON with MLX provenance, or a directory (default: bundled calibrations).",
     )
     translation_group.add_argument(
         "--alignatt-url",
